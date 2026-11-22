@@ -1,147 +1,100 @@
 # DocuBot Model Card
 
-This model card is a short reflection on your DocuBot system. Fill it out after you have implemented retrieval and experimented with all three modes:
-
-1. Naive LLM over full docs  
-2. Retrieval only  
-3. RAG (retrieval plus LLM)
-
-Use clear, honest descriptions. It is fine if your system is imperfect.
-
----
-
 ## 1. System Overview
 
-**What is DocuBot trying to do?**  
-Describe the overall goal in 2 to 3 sentences.
+**What is DocuBot trying to do?**
 
-> _Your answer here._
+DocuBot searches local Markdown documentation and, in RAG mode, asks a Gemini model to answer from relevant retrieved sections. The goal is to answer codebase questions with documented evidence and refuse unsupported requests.
 
-**What inputs does DocuBot take?**  
-For example: user question, docs in folder, environment variables.
+**What inputs does DocuBot take?**
 
-> _Your answer here._
+It takes a user question, Markdown or text files in `docs/`, optional retrieval settings, and `GEMINI_API_KEY` for LLM modes.
 
 **What outputs does DocuBot produce?**
 
-> _Your answer here._
-
----
+Retrieval-only mode returns raw source snippets. Naive and RAG modes produce natural-language answers, and RAG cites the source files it used.
 
 ## 2. Retrieval Design
 
-**How does your retrieval system work?**  
-Describe your choices for indexing and scoring.
+**How does your retrieval system work?**
 
 - How do you turn documents into an index?
 - How do you score relevance for a query?
 - How do you choose top snippets?
 
-> _Your answer here._
+DocuBot builds an inverted index of lowercase alphanumeric words to filenames. Retrieval divides Markdown by headings and scores section text by the number of unique meaningful query words it contains. It sorts matches by descending score and returns the top `top_k` snippets.
 
-**What tradeoffs did you make?**  
-For example: speed vs precision, simplicity vs accuracy.
+**What tradeoffs did you make?**
 
-> _Your answer here._
-
----
+The heading-based unit is more precise than an entire file, but it can include nearby irrelevant text. The index and scoring are fast and understandable, but they do not use stemming, phrases, or semantic similarity.
 
 ## 3. Use of the LLM (Gemini)
 
-**When does DocuBot call the LLM and when does it not?**  
-Briefly describe how each mode behaves.
+**When does DocuBot call the LLM and when does it not?**
 
-- Naive LLM mode:
-- Retrieval only mode:
-- RAG mode:
+- Naive LLM mode: calls Gemini with a generic question and no corpus context.
+- Retrieval only mode: never calls the LLM; it returns matching snippets or refusal text.
+- RAG mode: retrieves first and calls Gemini only when snippets pass the evidence guardrail.
 
-> _Your answer here._
+**What instructions do you give the LLM to keep it grounded?**
 
-**What instructions do you give the LLM to keep it grounded?**  
-Summarize the rules from your prompt. For example: only use snippets, say "I do not know" when needed, cite files.
-
-> _Your answer here._
-
----
+The RAG prompt requires the model to use only supplied snippets, refuse when evidence is insufficient, use an exact refusal sentence, and mention source files.
 
 ## 4. Experiments and Comparisons
 
-Run the **same set of queries** in all three modes. Fill in the table with short notes.
-
-You can reuse or adapt the queries from `dataset.py`.
-
 | Query | Naive LLM: helpful or harmful? | Retrieval only: helpful or harmful? | RAG: helpful or harmful? | Notes |
 |------|---------------------------------|--------------------------------------|---------------------------|-------|
-| Example: Where is the auth token generated? | | | | |
-| Example: How do I connect to the database? | | | | |
-| Example: Which endpoint lists all users? | | | | |
-| Example: How does a client refresh an access token? | | | | |
+| Where is the auth token generated? | Harmful for the first run: a stale model name returned an API error. After correction, naive mode lacked project context and asked for code. | Helpful: returned `AUTH.md` token-generation sections. | Helpful: identified `generate_access_token` in `auth_utils.py` and cited `AUTH.md`. | RAG was grounded in retrieved evidence. |
+| How do I connect to the database? | Harmful: suggested invented database credentials and ORM patterns. | Helpful: returned `DATABASE.md` connection sections. | Helpful: stated `DATABASE_URL`, SQLite, and PostgreSQL examples from `DATABASE.md`. | This showed a clear grounding improvement. |
+| Which endpoint lists all users? | Harmful: guessed generic endpoints instead of the documented route. | Helpful: returned `GET /api/users` and its response. | Helpful: answered `GET /api/users` and cited `API_REFERENCE.md`. | Retrieval-only was accurate but raw; RAG was easier to read. |
+| How does a client refresh an access token? | Harmful: produced a generic OAuth refresh-token process unsupported by these docs. | Helpful: returned authentication workflow and API refresh sections. | Helpful: described `POST /api/refresh`, the Bearer header, and cited both relevant files. | RAG separated documented behavior from generic OAuth assumptions. |
 
-**What patterns did you notice?**  
+**What patterns did you notice?**
 
-- When does naive LLM look impressive but untrustworthy?  
-- When is retrieval only clearly better?  
-- When is RAG clearly better than both?
-
-> _Your answer here._
-
----
+- Naive generation is untrustworthy when it adds plausible variable names or OAuth details absent from the docs.
+- Retrieval-only is clearly better for exact source-backed facts.
+- RAG is clearly better when it explains matching evidence concisely and cites files.
 
 ## 5. Failure Cases and Guardrails
 
-**Describe at least two concrete failure cases you observed.**  
-For each one, say:
+**Describe at least two concrete failure cases you observed.**
 
-- What was the question?  
-- What did the system do?  
-- What should have happened instead?
+**Failure case 1:** “Is there any mention of payment processing in these docs?” The system retrieved no evidence and returned “I do not know based on these docs.” That refusal was appropriate.
 
-> _Failure case 1 here._
+**Failure case 2:** Naive mode answered the database question with invented `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD` fields. The docs instead specify `DATABASE_URL`; the answer should have been grounded in that variable and its SQLite/PostgreSQL examples.
 
-> _Failure case 2 here._
+**When should DocuBot say “I do not know based on the docs I have”?**
 
-**When should DocuBot say “I do not know based on the docs I have”?**  
-Give at least two specific situations.
+- When no snippets match the query.
+- When all candidates have no meaningful query-word matches.
+- When retrieved text does not discuss the requested topic.
 
-> _Your answer here._
+**What guardrails did you implement?**
 
-**What guardrails did you implement?**  
-Examples: refusal rules, thresholds, limits on snippets, safe defaults.
-
-> _Your answer here._
-
----
+The retrieval guardrail rejects empty results or candidates with no meaningful query-word match. RAG repeats the refusal when snippets are empty or weak. The RAG prompt forbids invented endpoints, functions, and configuration values.
 
 ## 6. Limitations and Future Improvements
 
-**Current limitations**  
-List at least three limitations of your DocuBot system.
+**Current limitations**
 
-1. _Limitation 1_
-2. _Limitation 2_
-3. _Limitation 3_
+1. Indexing is keyword-based and misses synonyms and semantic meaning.
+2. Markdown heading and paragraph boundaries can include surrounding irrelevant text.
+3. The guardrail uses a simple match threshold rather than a confidence model.
 
-**Future improvements**  
-List two or three changes that would most improve reliability or usefulness.
+**Future improvements**
 
-1. _Improvement 1_
-2. _Improvement 2_
-3. _Improvement 3_
-
----
+1. Add stemming or a lightweight BM25-style score.
+2. Use smaller Markdown chunks with heading metadata preserved.
+3. Require stronger match thresholds or a dedicated relevance classifier.
 
 ## 7. Responsible Use
 
-**Where could this system cause real world harm if used carelessly?**  
-Think about wrong answers, missing information, or over trusting the LLM.
+**Where could this system cause real world harm if used carelessly?**
 
-> _Your answer here._
+An unsupported answer could cause developers to configure nonexistent variables, call wrong endpoints, weaken authentication, or use incorrect database settings.
 
-**What instructions would you give real developers who want to use DocuBot safely?**  
-Write 2 to 4 short bullet points.
+**What instructions would you give real developers who want to use DocuBot safely?**
 
-- _Guideline 1_
-- _Guideline 2_
-- _Guideline 3 (optional)_
-
----
+- Verify source filenames and snippets before acting on an answer.
+- Treat confident or generic LLM details as hypotheses until matched to project documentation.
+- Keep refusal behavior enabled for unsupported or out-of-scope questions.

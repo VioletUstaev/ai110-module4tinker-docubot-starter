@@ -9,6 +9,7 @@ Core DocuBot class responsible for:
 
 import os
 import glob
+import re
 
 class DocuBot:
     def __init__(self, docs_folder="docs", llm_client=None):
@@ -50,21 +51,16 @@ class DocuBot:
 
     def build_index(self, documents):
         """
-        TODO (Phase 1):
         Build a tiny inverted index mapping lowercase words to the documents
         they appear in.
-
-        Example structure:
-        {
-            "token": ["AUTH.md", "API_REFERENCE.md"],
-            "database": ["DATABASE.md"]
-        }
-
-        Keep this simple: split on whitespace, lowercase tokens,
-        ignore punctuation if needed.
         """
         index = {}
-        # TODO: implement simple indexing
+        for filename, text in documents:
+            words = set(re.findall(r"[a-z0-9]+", text.lower()))
+            for word in words:
+                index.setdefault(word, [])
+                if filename not in index[word]:
+                    index[word].append(filename)
         return index
 
     # -----------------------------------------------------------
@@ -73,27 +69,43 @@ class DocuBot:
 
     def score_document(self, query, text):
         """
-        TODO (Phase 1):
-        Return a simple relevance score for how well the text matches the query.
-
-        Suggested baseline:
-        - Convert query into lowercase words
-        - Count how many appear in the text
-        - Return the count as the score
+        Count unique meaningful query words that appear in the text.
         """
-        # TODO: implement scoring
-        return 0
+        stop_words = {
+            "a", "an", "and", "are", "do", "does", "for", "how", "is",
+            "in", "of", "the", "to", "what", "which", "where", "with",
+            "any", "mention", "processing", "docs", "these", "does", "does"
+        }
+        query_words = set(re.findall(r"[a-z0-9]+", query.lower()))
+        query_words -= stop_words
+        text_words = set(re.findall(r"[a-z0-9]+", text.lower()))
+        return len(query_words & text_words)
 
     def retrieve(self, query, top_k=3):
         """
-        TODO (Phase 1):
-        Use the index and scoring function to select top_k relevant document snippets.
-
-        Return a list of (filename, text) sorted by score descending.
+        Select the top_k paragraph-sized snippets with the highest relevance.
         """
         results = []
-        # TODO: implement retrieval logic
-        return results[:top_k]
+        for filename, text in self.documents:
+            section_starts = list(re.finditer(r"(?m)^#{1,6}\s+.+$", text))
+            if not section_starts:
+                section_starts = [re.match(r"(?s).*", text)]
+
+            for i, heading_match in enumerate(section_starts):
+                if i + 1 < len(section_starts):
+                    end = section_starts[i + 1].start()
+                else:
+                    end = len(text)
+                snippet = text[heading_match.start():end].strip()
+                if not snippet:
+                    continue
+                score = self.score_document(query, snippet)
+                if score > 0:
+                    results.append((score, filename, snippet))
+
+        results.sort(key=lambda item: (-item[0], item[1], item[2]))
+        retrieved = [(filename, snippet) for _, filename, snippet in results[:top_k]]
+        return retrieved
 
     # -----------------------------------------------------------
     # Answering Modes
@@ -106,7 +118,7 @@ class DocuBot:
         """
         snippets = self.retrieve(query, top_k=top_k)
 
-        if not snippets:
+        if not snippets or all(self.score_document(query, text) < 1 for _, text in snippets):
             return "I do not know based on these docs."
 
         formatted = []
@@ -128,7 +140,7 @@ class DocuBot:
 
         snippets = self.retrieve(query, top_k=top_k)
 
-        if not snippets:
+        if not snippets or all(self.score_document(query, text) < 1 for _, text in snippets):
             return "I do not know based on these docs."
 
         return self.llm_client.answer_from_snippets(query, snippets)
